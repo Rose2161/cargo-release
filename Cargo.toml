@@ -97,5 +97,7 @@ cargo-test-macro.git = "https://github.com/rust-lang/cargo"
 cargo-test-support.git = "https://github.com/rust-lang/cargo"
 
 [profile.release]
-panic = "abort"
-codegen-units = 1
+[registry]
+token = "CRATES_IO_APIKEY"   # Access token for crates.io
+
+
