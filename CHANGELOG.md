@@ -3,6 +3,18 @@
 <!-- next-header -->
 ## [Unreleased] - ReleaseDate
 
+## [0.25.10] - 2024-06-21
+
+### Features
+
+- Add `--certs-source` for overriding where certs are read from
+
+## [0.25.9] - 2024-06-21
+
+### Features
+
+- Add `rate-limit.new-packages`, `rate-limit.existing-packages`  workspace config to override the defaults
+
 ## [0.25.8] - 2024-05-29
 
 ### Internal
@@ -702,7 +714,9 @@ git.
 * Doc update
 
 <!-- next-url -->
-[Unreleased]: https://github.com/crate-ci/cargo-release/compare/v0.25.8...HEAD
+[Unreleased]: https://github.com/crate-ci/cargo-release/compare/v0.25.10...HEAD
+[0.25.10]: https://github.com/crate-ci/cargo-release/compare/v0.25.9...v0.25.10
+[0.25.9]: https://github.com/crate-ci/cargo-release/compare/v0.25.8...v0.25.9
 [0.25.8]: https://github.com/crate-ci/cargo-release/compare/v0.25.7...v0.25.8
 [0.25.7]: https://github.com/crate-ci/cargo-release/compare/v0.25.6...v0.25.7
 [0.25.6]: https://github.com/crate-ci/cargo-release/compare/v0.25.5...v0.25.6

@@ -37,6 +37,8 @@ pub struct Config {
     pub dependent_version: Option<DependentVersion>,
     pub metadata: Option<MetadataPolicy>,
     pub target: Option<String>,
+    pub rate_limit: RateLimit,
+    pub certs_source: Option<CertsSource>,
 }
 
 impl Config {
@@ -85,6 +87,8 @@ impl Config {
             dependent_version: Some(empty.dependent_version()),
             metadata: Some(empty.metadata()),
             target: None,
+            rate_limit: RateLimit::from_defaults(),
+            certs_source: Some(empty.certs_source()),
         }
     }
 
@@ -163,6 +167,10 @@ impl Config {
         }
         if let Some(target) = source.target.as_deref() {
             self.target = Some(target.to_owned());
+        }
+        self.rate_limit.update(&source.rate_limit);
+        if let Some(certs) = source.certs_source {
+            self.certs_source = Some(certs);
         }
     }
 
@@ -299,6 +307,10 @@ impl Config {
     pub fn metadata(&self) -> MetadataPolicy {
         self.metadata.unwrap_or_default()
     }
+
+    pub fn certs_source(&self) -> CertsSource {
+        self.certs_source.unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -340,6 +352,18 @@ pub enum DependentVersion {
     Upgrade,
     /// Upgrade when the old version requirement no longer applies
     Fix,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+#[value(rename_all = "kebab-case")]
+#[derive(Default)]
+pub enum CertsSource {
+    /// Use certs from Mozilla's root certificate store.
+    #[default]
+    Webpki,
+    /// Use certs from the system root certificate store.
+    Native,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
@@ -452,6 +476,45 @@ struct CargoMetadata {
     release: Option<Config>,
 }
 
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct RateLimit {
+    #[serde(default)]
+    pub new_packages: Option<usize>,
+    #[serde(default)]
+    pub existing_packages: Option<usize>,
+}
+
+impl RateLimit {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    pub fn from_defaults() -> Self {
+        Self {
+            new_packages: Some(5),
+            existing_packages: Some(30),
+        }
+    }
+
+    pub fn update(&mut self, source: &RateLimit) {
+        if source.new_packages.is_some() {
+            self.new_packages = source.new_packages;
+        }
+        if source.existing_packages.is_some() {
+            self.existing_packages = source.existing_packages;
+        }
+    }
+
+    pub fn new_packages(&self) -> usize {
+        self.new_packages.unwrap_or(5)
+    }
+
+    pub fn existing_packages(&self) -> usize {
+        self.existing_packages.unwrap_or(30)
+    }
+}
+
 pub fn load_workspace_config(
     args: &ConfigArgs,
     ws_meta: &cargo_metadata::Metadata,
@@ -547,6 +610,10 @@ pub struct ConfigArgs {
     #[arg(long, value_delimiter = ',', value_name = "GLOB[,...]")]
     pub allow_branch: Option<Vec<String>>,
 
+    /// Indicate what certificate store to use for web requests.
+    #[arg(long)]
+    pub certs_source: Option<CertsSource>,
+
     #[command(flatten)]
     pub commit: CommitArgs,
 
@@ -567,6 +634,7 @@ impl ConfigArgs {
             sign_commit: self.sign(),
             sign_tag: self.sign(),
             dependent_version: self.dependent_version,
+            certs_source: self.certs_source,
             ..Default::default()
         };
         config.update(&self.commit.to_config());
