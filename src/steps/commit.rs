@@ -1,7 +1,7 @@
 use crate::config;
 use crate::error::CliError;
 use crate::ops::git;
-use crate::ops::replace::{Template, NOW};
+use crate::ops::replace::{NOW, Template};
 use crate::steps::plan;
 
 /// Commit the specified packages
@@ -20,6 +20,10 @@ pub struct CommitStep {
     #[arg(long)]
     isolated: bool,
 
+    /// Unstable options
+    #[arg(short = 'Z', value_name = "FEATURE")]
+    z: Vec<config::UnstableValues>,
+
     /// Comma-separated globs of branch names a release can happen from
     #[arg(long, value_delimiter = ',')]
     allow_branch: Option<Vec<String>>,
@@ -36,7 +40,7 @@ pub struct CommitStep {
     no_confirm: bool,
 
     #[command(flatten)]
-    commit: crate::config::CommitArgs,
+    commit: config::CommitArgs,
 }
 
 impl CommitStep {
@@ -55,7 +59,7 @@ impl CommitStep {
             .features(cargo_metadata::CargoOpt::AllFeatures)
             .exec()?;
         let config = self.to_config();
-        let ws_config = crate::config::load_workspace_config(&config, &ws_meta)?;
+        let ws_config = config::load_workspace_config(&config, &ws_meta)?;
         let pkgs = plan::load(&config, &ws_meta)?;
 
         let pkgs = plan::plan(pkgs)?;
@@ -64,7 +68,7 @@ impl CommitStep {
             .into_iter()
             .map(|(_, pkg)| pkg)
             .partition(|p| p.config.release());
-        if crate::ops::git::is_dirty(ws_meta.workspace_root.as_std_path())?.is_none() {
+        if git::is_dirty(ws_meta.workspace_root.as_std_path())?.is_none() {
             let _ = crate::ops::shell::error("nothing to commit");
             return Err(2.into());
         }
@@ -93,25 +97,26 @@ impl CommitStep {
         if ws_config.is_workspace {
             let consolidate_commits = super::consolidate_commits(&selected_pkgs, &excluded_pkgs)?;
             if !consolidate_commits {
-                let _ = crate::shell::warn(
+                let _ = crate::ops::shell::warn(
                     "ignoring `consolidate-commits=false`; `cargo release commit` can effectively only do one commit",
                 );
             }
-            super::commit::workspace_commit(&ws_meta, &ws_config, &selected_pkgs, dry_run)?;
+            workspace_commit(&ws_meta, &ws_config, &selected_pkgs, dry_run)?;
         } else if !selected_pkgs.is_empty() {
             let selected_pkg = selected_pkgs
                 .first()
                 .expect("non-workspace can have at most 1 package");
-            super::commit::pkg_commit(selected_pkg, dry_run)?;
+            pkg_commit(selected_pkg, dry_run)?;
         }
 
         super::finish(failed, dry_run)
     }
 
-    fn to_config(&self) -> crate::config::ConfigArgs {
-        crate::config::ConfigArgs {
+    fn to_config(&self) -> config::ConfigArgs {
+        config::ConfigArgs {
             custom_config: self.custom_config.clone(),
             isolated: self.isolated,
+            z: self.z.clone(),
             allow_branch: self.allow_branch.clone(),
             commit: self.commit.clone(),
             ..Default::default()

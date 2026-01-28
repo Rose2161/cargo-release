@@ -60,8 +60,7 @@ impl VersionExt for semver::Version {
         if let Some((pre_ext, pre_ext_ver)) = prerelease_id_version(self)? {
             if pre_ext == VERSION_BETA || pre_ext == VERSION_RC {
                 Err(anyhow::format_err!(
-                    "unsupported release level {}, only major, minor, and patch are supported",
-                    VERSION_ALPHA
+                    "unsupported release level {VERSION_ALPHA}, only major, minor, and patch are supported"
                 ))
             } else {
                 let new_ext_ver = if pre_ext == VERSION_ALPHA {
@@ -69,12 +68,12 @@ impl VersionExt for semver::Version {
                 } else {
                     1
                 };
-                self.pre = semver::Prerelease::new(&format!("{}.{}", VERSION_ALPHA, new_ext_ver))?;
+                self.pre = semver::Prerelease::new(&format!("{VERSION_ALPHA}.{new_ext_ver}"))?;
                 Ok(())
             }
         } else {
             self.increment_patch();
-            self.pre = semver::Prerelease::new(&format!("{}.1", VERSION_ALPHA))?;
+            self.pre = semver::Prerelease::new(&format!("{VERSION_ALPHA}.1"))?;
             Ok(())
         }
     }
@@ -83,8 +82,7 @@ impl VersionExt for semver::Version {
         if let Some((pre_ext, pre_ext_ver)) = prerelease_id_version(self)? {
             if pre_ext == VERSION_RC {
                 Err(anyhow::format_err!(
-                    "unsupported release level {}, only major, minor, and patch are supported",
-                    VERSION_BETA
+                    "unsupported release level {VERSION_BETA}, only major, minor, and patch are supported"
                 ))
             } else {
                 let new_ext_ver = if pre_ext == VERSION_BETA {
@@ -92,12 +90,12 @@ impl VersionExt for semver::Version {
                 } else {
                     1
                 };
-                self.pre = semver::Prerelease::new(&format!("{}.{}", VERSION_BETA, new_ext_ver))?;
+                self.pre = semver::Prerelease::new(&format!("{VERSION_BETA}.{new_ext_ver}"))?;
                 Ok(())
             }
         } else {
             self.increment_patch();
-            self.pre = semver::Prerelease::new(&format!("{}.1", VERSION_BETA))?;
+            self.pre = semver::Prerelease::new(&format!("{VERSION_BETA}.1"))?;
             Ok(())
         }
     }
@@ -109,11 +107,11 @@ impl VersionExt for semver::Version {
             } else {
                 1
             };
-            self.pre = semver::Prerelease::new(&format!("{}.{}", VERSION_RC, new_ext_ver))?;
+            self.pre = semver::Prerelease::new(&format!("{VERSION_RC}.{new_ext_ver}"))?;
             Ok(())
         } else {
             self.increment_patch();
-            self.pre = semver::Prerelease::new(&format!("{}.1", VERSION_RC))?;
+            self.pre = semver::Prerelease::new(&format!("{VERSION_RC}.1"))?;
             Ok(())
         }
     }
@@ -149,7 +147,7 @@ fn prerelease_id_version(version: &semver::Version) -> CargoResult<Option<(Strin
 
 /// Upgrade an existing requirement to a new version
 pub fn upgrade_requirement(req: &str, version: &semver::Version) -> CargoResult<Option<String>> {
-    let req_text = req.to_string();
+    let req_text = req.to_owned();
     let raw_req = semver::VersionReq::parse(&req_text)
         .expect("semver to generate valid version requirements");
     if raw_req.comparators.is_empty() {
@@ -168,13 +166,12 @@ pub fn upgrade_requirement(req: &str, version: &semver::Version) -> CargoResult<
             new_req_text.remove(0);
         }
         // Validate contract
-        #[cfg(debug_assert)]
+        #[cfg(debug_assertions)]
         {
             assert!(
                 new_req.matches(version),
-                "Invalid req created: {}",
-                new_req_text
-            )
+                "Invalid req created: {new_req_text}"
+            );
         }
         if new_req_text == req_text {
             Ok(None)
@@ -201,15 +198,14 @@ fn set_comparator(
         }
         semver::Op::Exact => Ok(assign_partial_req(version, pred)),
         semver::Op::Greater | semver::Op::GreaterEq | semver::Op::Less | semver::Op::LessEq => Err(
-            anyhow::format_err!("support for modifying {} is currently unsupported", pred),
+            anyhow::format_err!("support for modifying {pred} is currently unsupported"),
         ),
         semver::Op::Tilde => Ok(assign_partial_req(version, pred)),
         semver::Op::Caret => Ok(assign_partial_req(version, pred)),
         _ => {
             log::debug!("new predicate added");
             Err(anyhow::format_err!(
-                "support for modifying {} is currently unsupported",
-                pred
+                "support for modifying {pred} is currently unsupported"
             ))
         }
     }

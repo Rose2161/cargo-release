@@ -19,6 +19,10 @@ pub struct OwnerStep {
     #[arg(long)]
     isolated: bool,
 
+    /// Unstable options
+    #[arg(short = 'Z', value_name = "FEATURE")]
+    z: Vec<crate::config::UnstableValues>,
+
     /// Comma-separated globs of branch names a release can happen from
     #[arg(long, value_delimiter = ',')]
     allow_branch: Option<Vec<String>>,
@@ -56,9 +60,7 @@ impl OwnerStep {
 
         let (_selected_pkgs, excluded_pkgs) = self.workspace.partition_packages(&ws_meta);
         for excluded_pkg in excluded_pkgs {
-            let pkg = if let Some(pkg) = pkgs.get_mut(&excluded_pkg.id) {
-                pkg
-            } else {
+            let Some(pkg) = pkgs.get_mut(&excluded_pkg.id) else {
                 // Either not in workspace or marked as `release = false`.
                 continue;
             };
@@ -71,7 +73,7 @@ impl OwnerStep {
             pkg.config.release = Some(false);
 
             let crate_name = pkg.meta.name.as_str();
-            log::debug!("disabled by user, skipping {}", crate_name,);
+            log::debug!("disabled by user, skipping {crate_name}",);
         }
 
         let mut pkgs = plan::plan(pkgs)?;
@@ -135,6 +137,7 @@ impl OwnerStep {
         crate::config::ConfigArgs {
             custom_config: self.custom_config.clone(),
             isolated: self.isolated,
+            z: self.z.clone(),
             allow_branch: self.allow_branch.clone(),
             ..Default::default()
         }

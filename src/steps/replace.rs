@@ -1,6 +1,6 @@
 use crate::error::CliError;
 use crate::ops::git;
-use crate::ops::replace::{do_file_replacements, Template, NOW};
+use crate::ops::replace::{NOW, Template, do_file_replacements};
 use crate::steps::plan;
 
 /// Perform pre-release replacements
@@ -23,6 +23,10 @@ pub struct ReplaceStep {
     /// Ignore implicit configuration files.
     #[arg(long)]
     isolated: bool,
+
+    /// Unstable options
+    #[arg(short = 'Z', value_name = "FEATURE")]
+    z: Vec<crate::config::UnstableValues>,
 
     /// Comma-separated globs of branch names a release can happen from
     #[arg(long, value_delimiter = ',')]
@@ -60,11 +64,14 @@ impl ReplaceStep {
         let ws_config = crate::config::load_workspace_config(&config, &ws_meta)?;
         let mut pkgs = plan::load(&config, &ws_meta)?;
 
-        let (_selected_pkgs, excluded_pkgs) = self.workspace.partition_packages(&ws_meta);
-        for excluded_pkg in excluded_pkgs {
-            let pkg = if let Some(pkg) = pkgs.get_mut(&excluded_pkg.id) {
-                pkg
+        let (_selected_pkgs, excluded_pkgs) =
+            if self.unpublished && self.workspace == clap_cargo::Workspace::default() {
+                ws_meta.packages.iter().partition(|_| false)
             } else {
+                self.workspace.partition_packages(&ws_meta)
+            };
+        for excluded_pkg in excluded_pkgs {
+            let Some(pkg) = pkgs.get_mut(&excluded_pkg.id) else {
                 // Either not in workspace or marked as `release = false`.
                 continue;
             };
@@ -87,6 +94,7 @@ impl ReplaceStep {
                     pkg.config.registry(),
                     crate_name,
                     &version.full_version_string,
+                    pkg.config.certs_source(),
                 ) {
                     log::debug!(
                         "enabled {}, v{} is unpublished",
@@ -153,6 +161,7 @@ impl ReplaceStep {
         crate::config::ConfigArgs {
             custom_config: self.custom_config.clone(),
             isolated: self.isolated,
+            z: self.z.clone(),
             allow_branch: self.allow_branch.clone(),
             ..Default::default()
         }

@@ -1,3 +1,4 @@
+use crate::config::CertsSource;
 use tame_index::krate::IndexKrate;
 use tame_index::utils::flock::FileLock;
 
@@ -22,8 +23,12 @@ impl CratesIoIndex {
         &mut self,
         registry: Option<&str>,
         name: &str,
+        certs_source: CertsSource,
     ) -> Result<bool, crate::error::CliError> {
-        Ok(self.krate(registry, name)?.map(|_| true).unwrap_or(false))
+        Ok(self
+            .krate(registry, name, certs_source)?
+            .map(|_| true)
+            .unwrap_or(false))
     }
 
     /// Determines if the specified crate version exists in the crates.io index
@@ -33,8 +38,9 @@ impl CratesIoIndex {
         registry: Option<&str>,
         name: &str,
         version: &str,
+        certs_source: CertsSource,
     ) -> Result<Option<bool>, crate::error::CliError> {
-        let krate = self.krate(registry, name)?;
+        let krate = self.krate(registry, name, certs_source)?;
         Ok(krate.map(|ik| ik.versions.iter().any(|iv| iv.version == version)))
     }
 
@@ -51,6 +57,7 @@ impl CratesIoIndex {
         &mut self,
         registry: Option<&str>,
         name: &str,
+        certs_source: CertsSource,
     ) -> Result<Option<IndexKrate>, crate::error::CliError> {
         if let Some(registry) = registry {
             log::trace!("Cannot connect to registry `{registry}`");
@@ -64,7 +71,7 @@ impl CratesIoIndex {
 
         if self.index.is_none() {
             log::trace!("Connecting to index");
-            self.index = Some(RemoteIndex::open()?);
+            self.index = Some(RemoteIndex::open(certs_source)?);
         }
         let index = self.index.as_mut().unwrap();
         log::trace!("Downloading index for {name}");
@@ -76,20 +83,29 @@ impl CratesIoIndex {
 
 pub struct RemoteIndex {
     index: tame_index::SparseIndex,
-    client: reqwest::blocking::Client,
+    client: tame_index::external::reqwest::blocking::Client,
     lock: FileLock,
     etags: Vec<(String, String)>,
 }
 
 impl RemoteIndex {
     #[inline]
-    pub fn open() -> Result<Self, crate::error::CliError> {
+    pub fn open(certs_source: CertsSource) -> Result<Self, crate::error::CliError> {
         let index = tame_index::SparseIndex::new(tame_index::IndexLocation::new(
             tame_index::IndexUrl::CratesIoSparse,
         ))?;
-        let client = reqwest::blocking::ClientBuilder::new()
-            .http2_prior_knowledge()
-            .build()?;
+
+        let client = {
+            let builder = tame_index::external::reqwest::blocking::ClientBuilder::new();
+
+            let builder = match certs_source {
+                CertsSource::Webpki => builder.tls_built_in_webpki_certs(true),
+                CertsSource::Native => builder.tls_built_in_native_certs(true),
+            };
+
+            builder.build()?
+        };
+
         let lock = FileLock::unlocked();
 
         Ok(Self {
@@ -114,16 +130,31 @@ impl RemoteIndex {
         let req = self
             .index
             .make_remote_request(krate_name, Some(etag), &self.lock)?;
-        let res = self.client.execute(req.try_into()?)?;
+        let (
+            tame_index::external::http::request::Parts {
+                method,
+                uri,
+                version,
+                headers,
+                ..
+            },
+            _,
+        ) = req.into_parts();
+        let mut req = self.client.request(method, uri.to_string());
+        req = req.version(version);
+        req = req.headers(headers);
+        let res = self.client.execute(req.build()?)?;
 
         // Grab the etag if it exists for future requests
-        if let Some(etag) = res.headers().get(reqwest::header::ETAG) {
-            if let Ok(etag) = etag.to_str() {
-                if let Some(i) = self.etags.iter().position(|(krate, _)| krate == name) {
-                    self.etags[i].1 = etag.to_owned();
-                } else {
-                    self.etags.push((name.to_owned(), etag.to_owned()));
-                }
+        if let Some(etag) = res
+            .headers()
+            .get(tame_index::external::reqwest::header::ETAG)
+            && let Ok(etag) = etag.to_str()
+        {
+            if let Some(i) = self.etags.iter().position(|(krate, _)| krate == name) {
+                etag.clone_into(&mut self.etags[i].1);
+            } else {
+                self.etags.push((name.to_owned(), etag.to_owned()));
             }
         }
 

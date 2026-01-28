@@ -117,7 +117,7 @@ impl PackageRelease {
             .targets
             .iter()
             .flat_map(|t| t.kind.iter())
-            .any(|k| k == "bin");
+            .any(|k| *k == cargo_metadata::TargetKind::Bin);
         let mut package_content = cargo::package_content(&manifest_path)?;
         if bin {
             // When publishing bins, the lock file is listed as relative to the package root, so
@@ -156,7 +156,7 @@ impl PackageRelease {
             &initial_version,
             &initial_version,
         );
-        let prior_tag = if crate::ops::git::tag_exists(&package_root, &initial_tag)? {
+        let prior_tag = if git::tag_exists(&package_root, &initial_tag)? {
             Some(initial_tag)
         } else {
             let tag_name = config.tag_name();
@@ -166,10 +166,10 @@ impl PackageRelease {
             match globset::Glob::new(&tag_glob) {
                 Ok(tag_glob) => {
                     let tag_glob = tag_glob.compile_matcher();
-                    crate::ops::git::find_last_tag(&package_root, &tag_glob)
+                    git::find_last_tag(&package_root, &tag_glob)
                 }
                 Err(err) => {
-                    log::debug!("failed to find tag with glob `{}`: {}", tag_glob, err);
+                    log::debug!("failed to find tag with glob `{tag_glob}`: {err}");
                     None
                 }
             }
@@ -211,8 +211,8 @@ impl PackageRelease {
         mut metadata: Option<&'s str>,
     ) -> CargoResult<()> {
         match self.config.metadata() {
-            crate::config::MetadataPolicy::Optional => {}
-            crate::config::MetadataPolicy::Required => {
+            config::MetadataPolicy::Optional => {}
+            config::MetadataPolicy::Required => {
                 if metadata.is_none() {
                     anyhow::bail!(
                         "`{}` requires the metadata to be overridden",
@@ -220,13 +220,13 @@ impl PackageRelease {
                     )
                 }
             }
-            crate::config::MetadataPolicy::Ignore => {
+            config::MetadataPolicy::Ignore => {
                 if let Some(metadata) = metadata {
                     log::debug!("ignoring metadata `{}` for `{}`", metadata, self.meta.name);
                 }
                 metadata = None;
             }
-            crate::config::MetadataPolicy::Persistent => {
+            config::MetadataPolicy::Persistent => {
                 let initial_metadata = &self.initial_version.full_version.build;
                 if !initial_metadata.is_empty() {
                     metadata.get_or_insert(initial_metadata.as_str());
@@ -317,10 +317,10 @@ fn find_dependents<'w>(
     pkg_meta: &'w cargo_metadata::Package,
 ) -> impl Iterator<Item = (&'w cargo_metadata::Package, &'w cargo_metadata::Dependency)> {
     ws_meta.packages.iter().filter_map(move |p| {
-        if ws_meta.workspace_members.iter().any(|m| *m == p.id) {
+        if ws_meta.workspace_members.contains(&p.id) {
             p.dependencies
                 .iter()
-                .find(|d| d.name == pkg_meta.name)
+                .find(|d| d.name == pkg_meta.name.as_str())
                 .map(|d| (p, d))
         } else {
             None

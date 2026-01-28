@@ -40,7 +40,7 @@ pub struct ReleaseStep {
     prev_tag_name: Option<String>,
 
     #[command(flatten)]
-    config: crate::config::ConfigArgs,
+    config: config::ConfigArgs,
 }
 
 impl ReleaseStep {
@@ -59,7 +59,7 @@ impl ReleaseStep {
             // When evaluating dependency ordering, we need to consider optional dependencies
             .features(cargo_metadata::CargoOpt::AllFeatures)
             .exec()?;
-        let ws_config = config::load_workspace_config(&self.config, &ws_meta)?;
+        let mut ws_config = config::load_workspace_config(&self.config, &ws_meta)?;
         let mut pkgs = plan::load(&self.config, &ws_meta)?;
 
         for pkg in pkgs.values_mut() {
@@ -68,22 +68,29 @@ impl ReleaseStep {
                 // they don't care about any changes from before this tag.
                 pkg.set_prior_tag(prev_tag.to_owned());
             }
-            if pkg.config.release() {
-                if let Some(level_or_version) = &self.level_or_version {
-                    pkg.bump(level_or_version, self.metadata.as_deref())?;
-                }
+            if pkg.config.release()
+                && let Some(level_or_version) = &self.level_or_version
+            {
+                pkg.bump(level_or_version, self.metadata.as_deref())?;
             }
-            if index.has_krate(pkg.config.registry(), &pkg.meta.name)? {
+            if index.has_krate(
+                pkg.config.registry(),
+                &pkg.meta.name,
+                pkg.config.certs_source(),
+            )? {
                 // Already published, skip it.  Use `cargo release owner` for one-time updates
                 pkg.ensure_owners = false;
             }
         }
 
-        let (_selected_pkgs, excluded_pkgs) = self.workspace.partition_packages(&ws_meta);
-        for excluded_pkg in &excluded_pkgs {
-            let pkg = if let Some(pkg) = pkgs.get_mut(&excluded_pkg.id) {
-                pkg
+        let (_selected_pkgs, excluded_pkgs) =
+            if self.unpublished && self.workspace == clap_cargo::Workspace::default() {
+                ws_meta.packages.iter().partition(|_| false)
             } else {
+                self.workspace.partition_packages(&ws_meta)
+            };
+        for excluded_pkg in &excluded_pkgs {
+            let Some(pkg) = pkgs.get_mut(&excluded_pkg.id) else {
                 // Either not in workspace or marked as `release = false`.
                 continue;
             };
@@ -106,6 +113,7 @@ impl ReleaseStep {
                     pkg.config.registry(),
                     crate_name,
                     &version.full_version_string,
+                    pkg.config.certs_source(),
                 ) {
                     log::debug!(
                         "enabled {}, v{} is unpublished",
@@ -125,34 +133,27 @@ impl ReleaseStep {
                 {
                     if !changed.is_empty() {
                         let _ = crate::ops::shell::warn(format!(
-                            "disabled by user, skipping {} which has files changed since {}: {:#?}",
-                            crate_name, prior_tag_name, changed
+                            "disabled by user, skipping {crate_name} which has files changed since {prior_tag_name}: {changed:#?}"
                         ));
                     } else {
                         log::trace!(
-                            "disabled by user, skipping {} (no changes since {})",
-                            crate_name,
-                            prior_tag_name
+                            "disabled by user, skipping {crate_name} (no changes since {prior_tag_name})"
                         );
                     }
                 } else {
                     log::debug!(
-                        "disabled by user, skipping {} (no {} tag)",
-                        crate_name,
-                        prior_tag_name
+                        "disabled by user, skipping {crate_name} (no {prior_tag_name} tag)"
                     );
                 }
             } else {
-                log::debug!("disabled by user, skipping {} (no tag found)", crate_name,);
+                log::debug!("disabled by user, skipping {crate_name} (no tag found)",);
             }
         }
 
         let pkgs = plan::plan(pkgs)?;
 
         for excluded_pkg in &excluded_pkgs {
-            let pkg = if let Some(pkg) = pkgs.get(&excluded_pkg.id) {
-                pkg
-            } else {
+            let Some(pkg) = pkgs.get(&excluded_pkg.id) else {
                 // Either not in workspace or marked as `release = false`.
                 continue;
             };
@@ -166,6 +167,7 @@ impl ReleaseStep {
                     pkg.config.registry(),
                     crate_name,
                     &version.full_version_string,
+                    pkg.config.certs_source(),
                 ) {
                     let _ = crate::ops::shell::warn(format!(
                         "disabled by user, skipping {} v{} despite being unpublished",
@@ -188,6 +190,7 @@ impl ReleaseStep {
         let mut failed = false;
 
         let consolidate_commits = super::consolidate_commits(&selected_pkgs, &excluded_pkgs)?;
+        ws_config.consolidate_commits = Some(consolidate_commits);
 
         // STEP 0: Help the user make the right decisions.
         failed |= !super::verify_git_is_clean(
@@ -213,10 +216,12 @@ impl ReleaseStep {
                 pkg.config.registry(),
                 crate_name,
                 &version.full_version_string,
+                pkg.config.certs_source(),
             ) {
+                let registry = pkg.config.registry().unwrap_or("crates.io");
                 let _ = crate::ops::shell::error(format!(
-                    "{} {} is already published",
-                    crate_name, version.full_version_string
+                    "{} {} is already published to {}",
+                    crate_name, version.full_version_string, registry
                 ));
                 double_publish = true;
             }
@@ -245,8 +250,13 @@ impl ReleaseStep {
         )?;
 
         failed |= !super::verify_metadata(&selected_pkgs, dry_run, log::Level::Error)?;
-        failed |=
-            !super::verify_rate_limit(&selected_pkgs, &mut index, dry_run, log::Level::Error)?;
+        failed |= !super::verify_rate_limit(
+            &selected_pkgs,
+            &mut index,
+            &ws_config.rate_limit,
+            dry_run,
+            log::Level::Error,
+        )?;
 
         // STEP 1: Release Confirmation
         super::confirm("Release", &selected_pkgs, self.no_confirm, dry_run)?;
@@ -259,7 +269,7 @@ impl ReleaseStep {
                 log::debug!("updating lock file");
                 if !dry_run {
                     let workspace_path = ws_meta.workspace_root.as_std_path().join("Cargo.toml");
-                    crate::ops::cargo::update_lock(&workspace_path)?;
+                    cargo::update_lock(&workspace_path)?;
                 }
             }
 
@@ -309,7 +319,7 @@ impl ReleaseStep {
         }
 
         // STEP 3: cargo publish
-        super::publish::publish(&ws_meta, &selected_pkgs, &mut index, dry_run)?;
+        super::publish::publish(&selected_pkgs, dry_run)?;
         super::owner::ensure_owners(&selected_pkgs, dry_run)?;
 
         // STEP 5: Tag

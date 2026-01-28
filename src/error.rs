@@ -32,7 +32,7 @@ process_error_from!(std::io::Error);
 process_error_from!(semver::Error);
 process_error_from!(ignore::Error);
 process_error_from!(tame_index::Error);
-process_error_from!(reqwest::Error);
+process_error_from!(tame_index::external::reqwest::Error);
 process_error_from!(cargo_metadata::Error);
 process_error_from!(toml::ser::Error);
 process_error_from!(toml_edit::ser::Error);
@@ -44,19 +44,13 @@ impl From<i32> for CliError {
 }
 
 impl std::fmt::Display for CliError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(error) = self.error.as_ref() {
             error.fmt(f)
         } else {
             Ok(())
         }
     }
-}
-
-/// Report any error message and exit.
-pub fn exit(result: Result<(), CliError>) -> ! {
-    let code = report(result);
-    std::process::exit(code)
 }
 
 /// Report, delegating exiting to the caller.

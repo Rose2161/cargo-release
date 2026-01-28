@@ -21,6 +21,10 @@ pub struct PushStep {
     #[arg(long)]
     isolated: bool,
 
+    /// Unstable options
+    #[arg(short = 'Z', value_name = "FEATURE")]
+    z: Vec<crate::config::UnstableValues>,
+
     /// Comma-separated globs of branch names a release can happen from
     #[arg(long, value_delimiter = ',')]
     allow_branch: Option<Vec<String>>,
@@ -64,9 +68,7 @@ impl PushStep {
 
         let (_selected_pkgs, excluded_pkgs) = self.workspace.partition_packages(&ws_meta);
         for excluded_pkg in excluded_pkgs {
-            let pkg = if let Some(pkg) = pkgs.get_mut(&excluded_pkg.id) {
-                pkg
-            } else {
+            let Some(pkg) = pkgs.get_mut(&excluded_pkg.id) else {
                 // Either not in workspace or marked as `release = false`.
                 continue;
             };
@@ -78,7 +80,7 @@ impl PushStep {
             pkg.config.release = Some(false);
 
             let crate_name = pkg.meta.name.as_str();
-            log::debug!("disabled by user, skipping {}", crate_name,);
+            log::debug!("disabled by user, skipping {crate_name}",);
         }
 
         let pkgs = plan::plan(pkgs)?;
@@ -131,6 +133,7 @@ impl PushStep {
         crate::config::ConfigArgs {
             custom_config: self.custom_config.clone(),
             isolated: self.isolated,
+            z: self.z.clone(),
             allow_branch: self.allow_branch.clone(),
             tag: self.tag.clone(),
             push: self.push.clone(),
@@ -147,7 +150,7 @@ pub fn push(
 ) -> Result<(), CliError> {
     if ws_config.push() {
         let git_remote = ws_config.push_remote();
-        let branch = crate::ops::git::current_branch(ws_meta.workspace_root.as_std_path())?;
+        let branch = git::current_branch(ws_meta.workspace_root.as_std_path())?;
 
         let mut shared_refs = HashSet::new();
         for pkg in pkgs {

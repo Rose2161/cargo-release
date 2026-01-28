@@ -1,10 +1,9 @@
 use crate::error::CargoResult;
 use crate::error::CliError;
 use crate::ops::git;
-use crate::ops::shell::Color;
-use crate::ops::shell::ColorSpec;
 use crate::ops::version::VersionExt as _;
 use crate::steps::plan;
+use clap_cargo::style::{ERROR, GOOD, NOP, WARN};
 
 /// Print commits since last tag
 #[derive(Debug, Clone, clap::Args)]
@@ -19,6 +18,10 @@ pub struct ChangesStep {
     /// Ignore implicit configuration files.
     #[arg(long)]
     isolated: bool,
+
+    /// Unstable options
+    #[arg(short = 'Z', value_name = "FEATURE")]
+    z: Vec<crate::config::UnstableValues>,
 
     /// Comma-separated globs of branch names a release can happen from
     #[arg(long, value_delimiter = ',')]
@@ -113,7 +116,7 @@ pub fn changes(
             let repo = git2::Repository::discover(workspace_root)?;
 
             let mut tag_id = None;
-            let fq_prior_tag_name = format!("refs/tags/{}", prior_tag_name);
+            let fq_prior_tag_name = format!("refs/tags/{prior_tag_name}");
             repo.tag_foreach(|id, name| {
                 if name == fq_prior_tag_name.as_bytes() {
                     tag_id = Some(id);
@@ -122,8 +125,8 @@ pub fn changes(
                     true
                 }
             })?;
-            let tag_id = tag_id
-                .ok_or_else(|| anyhow::format_err!("could not find tag {}", prior_tag_name))?;
+            let tag_id =
+                tag_id.ok_or_else(|| anyhow::format_err!("could not find tag {prior_tag_name}"))?;
 
             let head_id = repo.head()?.peel_to_commit()?.id();
 
@@ -185,18 +188,14 @@ pub fn changes(
                 let prefix = format!("{:>13}", " ");
                 let mut max_status = None;
                 for commit in &commits {
-                    #[allow(clippy::needless_borrow)] // False positive
-                    let _ = crate::ops::shell::write_stderr(&prefix, &ColorSpec::new());
-                    let _ = crate::ops::shell::write_stderr(
-                        &commit.short_id,
-                        ColorSpec::new().set_fg(Some(Color::Yellow)),
-                    );
-                    let _ = crate::ops::shell::write_stderr(" ", &ColorSpec::new());
-                    let _ = crate::ops::shell::write_stderr(&commit.summary, &ColorSpec::new());
+                    let _ = crate::ops::shell::write_stderr(&prefix, &NOP);
+                    let _ = crate::ops::shell::write_stderr(&commit.short_id, &WARN);
+                    let _ = crate::ops::shell::write_stderr(" ", &NOP);
+                    let _ = crate::ops::shell::write_stderr(&commit.summary, &NOP);
 
                     let current_status = commit.status();
                     write_status(current_status);
-                    let _ = crate::ops::shell::write_stderr("\n", &ColorSpec::new());
+                    let _ = crate::ops::shell::write_stderr("\n", &NOP);
                     match (current_status, max_status) {
                         (Some(cur), Some(max)) => {
                             max_status = Some(cur.max(max));
@@ -214,7 +213,7 @@ pub fn changes(
                 let unbumped = pkg
                     .planned_tag
                     .as_deref()
-                    .and_then(|t| crate::ops::git::tag_exists(workspace_root, t).ok())
+                    .and_then(|t| git::tag_exists(workspace_root, t).ok())
                     .unwrap_or(false);
                 let bumped = !unbumped;
                 if let Some(max_status) = max_status {
@@ -252,17 +251,20 @@ pub fn changes(
                         CommitStatus::Ignore => None,
                     };
                     if let Some(suggested) = suggested {
-                        let _ = crate::ops::shell::note(format!("to update the version, run `cargo release version -p {crate_name} {suggested}`"));
+                        let _ = crate::ops::shell::note(format!(
+                            "to update the version, run `cargo release version -p {crate_name} {suggested}`"
+                        ));
                     } else if unbumped {
-                        let _ = crate::ops::shell::note(format!("to update the version, run `cargo release version -p {crate_name} <LEVEL|VERSION>`"));
+                        let _ = crate::ops::shell::note(format!(
+                            "to update the version, run `cargo release version -p {crate_name} <LEVEL|VERSION>`"
+                        ));
                     }
                 }
             }
         } else {
             log::debug!(
-                    "Cannot detect changes for {} because no tag was found. Try setting `--prev-tag-name <TAG>`.",
-                    crate_name,
-                );
+                "Cannot detect changes for {crate_name} because no tag was found. Try setting `--prev-tag-name <TAG>`.",
+            );
         }
     }
 
@@ -272,25 +274,25 @@ pub fn changes(
 fn write_status(status: Option<CommitStatus>) {
     if let Some(status) = status {
         let suffix;
-        let mut color = ColorSpec::new();
+        let mut style = NOP;
         match status {
             CommitStatus::Breaking => {
                 suffix = " (breaking)";
-                color.set_fg(Some(Color::Red));
+                style = ERROR;
             }
             CommitStatus::Feature => {
                 suffix = " (feature)";
-                color.set_fg(Some(Color::Yellow));
+                style = WARN;
             }
             CommitStatus::Fix => {
                 suffix = " (fix)";
-                color.set_fg(Some(Color::Green));
+                style = GOOD;
             }
             CommitStatus::Ignore => {
                 suffix = "";
             }
         }
-        let _ = crate::ops::shell::write_stderr(suffix, &color);
+        let _ = crate::ops::shell::write_stderr(suffix, &style);
     }
 }
 

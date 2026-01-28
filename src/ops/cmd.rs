@@ -12,11 +12,11 @@ fn do_call(
     dry_run: bool,
 ) -> CargoResult<bool> {
     let command: Vec<_> = command.into_iter().map(|s| s.into()).collect();
+    if let Some(path) = path {
+        log::trace!("cd {}", path.display());
+    }
+    log::trace!("{}", command.join(" "));
     if dry_run {
-        if path.is_some() {
-            log::trace!("cd {}", path.unwrap().display());
-        }
-        log::trace!("{}", command.join(" "));
         return Ok(true);
     }
     let mut iter = command.iter();
@@ -38,8 +38,17 @@ fn do_call(
         }
     }
 
-    let mut child = cmd.spawn()?;
-    let result = child.wait()?;
+    let ctx_dir = match path {
+        Some(p) => format!(" within {}", p.display()),
+        None => String::new(),
+    };
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| anyhow::format_err!("failed to launch `{cmd_name}`{ctx_dir}: {e}"))?;
+    let result = child
+        .wait()
+        .map_err(|e| anyhow::format_err!("failed to launch `{cmd_name}`{ctx_dir}: {e}"))?;
 
     Ok(result.success())
 }

@@ -2,8 +2,9 @@ use std::env;
 use std::path::Path;
 
 use bstr::ByteSlice;
+use itertools::Itertools as _;
 
-use crate::config;
+use crate::config::{self, CertsSource};
 use crate::error::CargoResult;
 use crate::ops::cmd::call;
 
@@ -32,9 +33,7 @@ pub fn package_content(manifest_path: &Path) -> CargoResult<Vec<std::path::PathB
     cmd.arg("--allow-dirty");
     let output = cmd.output()?;
 
-    let parent = manifest_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new(""));
+    let parent = manifest_path.parent().unwrap_or_else(|| Path::new(""));
 
     if output.status.success() {
         let paths = ByteSlice::lines(output.stdout.as_slice())
@@ -51,16 +50,19 @@ pub fn package_content(manifest_path: &Path) -> CargoResult<Vec<std::path::PathB
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn publish(
     dry_run: bool,
     verify: bool,
     manifest_path: &Path,
-    pkgid: Option<&str>,
-    features: &Features,
+    pkgids: &[&str],
+    features: &[&Features],
     registry: Option<&str>,
     target: Option<&str>,
 ) -> CargoResult<bool> {
+    if pkgids.is_empty() {
+        return Ok(true);
+    }
+
     let cargo = cargo();
 
     let mut command: Vec<&str> = vec![
@@ -70,7 +72,7 @@ pub fn publish(
         manifest_path.to_str().unwrap(),
     ];
 
-    if let Some(pkgid) = pkgid {
+    for pkgid in pkgids {
         command.push("--package");
         command.push(pkgid);
     }
@@ -94,60 +96,29 @@ pub fn publish(
         command.push(target);
     }
 
-    let feature_arg;
-    match features {
-        Features::None => (),
-        Features::Selective(vec) => {
-            feature_arg = vec.join(" ");
-            command.push("--features");
-            command.push(&feature_arg);
-        }
-        Features::All => {
-            command.push("--all-features");
-        }
-    };
-
-    call(command, false)
-}
-
-pub fn wait_for_publish(
-    index: &mut crate::ops::index::CratesIoIndex,
-    registry: Option<&str>,
-    name: &str,
-    version: &str,
-    timeout: std::time::Duration,
-    dry_run: bool,
-) -> CargoResult<()> {
-    if !dry_run {
-        if registry.is_some() {
-            // HACK: `index` never reports crates as present for alternative registries
-            log::debug!("Not waiting for publish as that is only supported for crates.io; ensure you are using at least cargo v1.66 which will wait for you.");
-            return Ok(());
-        }
-
-        let now = std::time::Instant::now();
-        let sleep_time = std::time::Duration::from_secs(1);
-        let mut logged = false;
-        loop {
-            index.update_krate(registry, name);
-            if is_published(index, registry, name, version) {
-                break;
-            } else if timeout < now.elapsed() {
-                anyhow::bail!("timeout waiting for crate to be published");
+    if features.iter().any(|f| matches!(f, Features::None)) {
+        command.push("--no-default-features");
+    }
+    if features.iter().any(|f| matches!(f, Features::All)) {
+        command.push("--all-features");
+    }
+    let selective = features
+        .iter()
+        .filter_map(|f| {
+            if let Features::Selective(f) = f {
+                Some(f)
+            } else {
+                None
             }
-
-            if !logged {
-                let _ = crate::ops::shell::status(
-                    "Waiting",
-                    format!("on {name} to propagate to index"),
-                );
-                logged = true;
-            }
-            std::thread::sleep(sleep_time);
-        }
+        })
+        .flatten()
+        .join(",");
+    if !selective.is_empty() {
+        command.push("--features");
+        command.push(&selective);
     }
 
-    Ok(())
+    call(command, false)
 }
 
 pub fn is_published(
@@ -155,8 +126,9 @@ pub fn is_published(
     registry: Option<&str>,
     name: &str,
     version: &str,
+    certs_source: CertsSource,
 ) -> bool {
-    match index.has_krate_version(registry, name, version) {
+    match index.has_krate_version(registry, name, version, certs_source) {
         Ok(has_krate_version) => has_krate_version.unwrap_or(false),
         Err(err) => {
             // For both http and git indices, this _might_ be an error that goes away in
@@ -174,28 +146,19 @@ pub fn set_workspace_version(
     dry_run: bool,
 ) -> CargoResult<()> {
     let original_manifest = std::fs::read_to_string(manifest_path)?;
-    let mut manifest: toml_edit::Document = original_manifest.parse()?;
+    let mut manifest: toml_edit::DocumentMut = original_manifest.parse()?;
     manifest["workspace"]["package"]["version"] = toml_edit::value(version);
     let manifest = manifest.to_string();
 
     if dry_run {
         if manifest != original_manifest {
-            let display_path = manifest_path.display().to_string();
-            let old_lines: Vec<_> = original_manifest
-                .lines()
-                .map(|s| format!("{}\n", s))
-                .collect();
-            let new_lines: Vec<_> = manifest.lines().map(|s| format!("{}\n", s)).collect();
-            let diff = difflib::unified_diff(
-                &old_lines,
-                &new_lines,
-                display_path.as_str(),
-                display_path.as_str(),
-                "original",
+            let diff = crate::ops::diff::unified_diff(
+                &original_manifest,
+                &manifest,
+                manifest_path,
                 "updated",
-                0,
             );
-            log::debug!("change:\n{}", itertools::join(diff.into_iter(), ""));
+            log::debug!("change:\n{diff}");
         }
     } else {
         atomic_write(manifest_path, &manifest)?;
@@ -234,10 +197,10 @@ pub fn ensure_owners(
     // HACK: No programmatic CLI access and don't want to link against `cargo` (yet), so parsing
     // text output
     for line in raw.lines() {
-        if let Some((owner, _)) = line.split_once(' ') {
-            if !owner.is_empty() {
-                current.insert(owner);
-            }
+        if let Some((owner, _)) = line.split_once(' ')
+            && !owner.is_empty()
+        {
+            current.insert(owner);
         }
     }
 
@@ -285,28 +248,19 @@ pub fn ensure_owners(
 
 pub fn set_package_version(manifest_path: &Path, version: &str, dry_run: bool) -> CargoResult<()> {
     let original_manifest = std::fs::read_to_string(manifest_path)?;
-    let mut manifest: toml_edit::Document = original_manifest.parse()?;
+    let mut manifest: toml_edit::DocumentMut = original_manifest.parse()?;
     manifest["package"]["version"] = toml_edit::value(version);
     let manifest = manifest.to_string();
 
     if dry_run {
         if manifest != original_manifest {
-            let display_path = manifest_path.display().to_string();
-            let old_lines: Vec<_> = original_manifest
-                .lines()
-                .map(|s| format!("{}\n", s))
-                .collect();
-            let new_lines: Vec<_> = manifest.lines().map(|s| format!("{}\n", s)).collect();
-            let diff = difflib::unified_diff(
-                &old_lines,
-                &new_lines,
-                display_path.as_str(),
-                display_path.as_str(),
-                "original",
+            let diff = crate::ops::diff::unified_diff(
+                &original_manifest,
+                &manifest,
+                manifest_path,
                 "updated",
-                0,
             );
-            log::debug!("change:\n{}", itertools::join(diff.into_iter(), ""));
+            log::debug!("change:\n{diff}");
         }
     } else {
         atomic_write(manifest_path, &manifest)?;
@@ -328,7 +282,7 @@ pub fn upgrade_dependency_req(
         .parent()
         .expect("always at least a parent dir");
     let original_manifest = std::fs::read_to_string(manifest_path)?;
-    let mut manifest: toml_edit::Document = original_manifest.parse()?;
+    let mut manifest: toml_edit::DocumentMut = original_manifest.parse()?;
 
     for dep_item in find_dependency_tables(manifest.as_table_mut())
         .flat_map(|t| t.iter_mut().filter_map(|(_, d)| d.as_table_like_mut()))
@@ -340,22 +294,13 @@ pub fn upgrade_dependency_req(
     let manifest = manifest.to_string();
     if manifest != original_manifest {
         if dry_run {
-            let display_path = manifest_path.display().to_string();
-            let old_lines: Vec<_> = original_manifest
-                .lines()
-                .map(|s| format!("{}\n", s))
-                .collect();
-            let new_lines: Vec<_> = manifest.lines().map(|s| format!("{}\n", s)).collect();
-            let diff = difflib::unified_diff(
-                &old_lines,
-                &new_lines,
-                display_path.as_str(),
-                display_path.as_str(),
-                "original",
+            let diff = crate::ops::diff::unified_diff(
+                &original_manifest,
+                &manifest,
+                manifest_path,
                 "updated",
-                0,
             );
-            log::debug!("change:\n{}", itertools::join(diff.into_iter(), ""));
+            log::debug!("change:\n{diff}");
         } else {
             atomic_write(manifest_path, &manifest)?;
         }
@@ -430,20 +375,18 @@ fn upgrade_req(
     let version_value = if let Some(version_value) = dep_item.get_mut("version") {
         version_value
     } else {
-        log::debug!("not updating path-only dependency on {}", name);
+        log::debug!("not updating path-only dependency on {name}");
         return false;
     };
 
     let existing_req_str = if let Some(existing_req) = version_value.as_str() {
         existing_req
     } else {
-        log::debug!("unsupported dependency {}", name);
+        log::debug!("unsupported dependency {name}");
         return false;
     };
-    let existing_req = if let Ok(existing_req) = semver::VersionReq::parse(existing_req_str) {
-        existing_req
-    } else {
-        log::debug!("unsupported dependency req {}={}", name, existing_req_str);
+    let Ok(existing_req) = semver::VersionReq::parse(existing_req_str) else {
+        log::debug!("unsupported dependency req {name}={existing_req_str}");
         return false;
     };
     let new_req = match upgrade {
@@ -475,10 +418,7 @@ fn upgrade_req(
 
     let _ = crate::ops::shell::status(
         "Updating",
-        format!(
-            "{}'s dependency from {} to {}",
-            manifest_name, existing_req_str, new_req
-        ),
+        format!("{manifest_name}'s dependency from {existing_req_str} to {new_req}"),
     );
     *version_value = toml_edit::value(new_req);
     true
@@ -502,7 +442,7 @@ pub fn sort_workspace(ws_meta: &cargo_metadata::Metadata) -> Vec<&cargo_metadata
         .iter()
         .filter_map(|n| {
             if members.contains(&n.id) {
-                // Ignore dev dependencies. This breaks dev dependency cyles and allows for
+                // Ignore dev dependencies. This breaks dev dependency cycles and allows for
                 // correct publishing order when a workspace package depends on the root package.
 
                 // It would be more correct to ignore only dev dependencies without a version
@@ -515,11 +455,7 @@ pub fn sort_workspace(ws_meta: &cargo_metadata::Metadata) -> Vec<&cargo_metadata
                         .iter()
                         .all(|info| info.kind == cargo_metadata::DependencyKind::Development);
 
-                    if dev_only {
-                        None
-                    } else {
-                        Some(&dep.pkg)
-                    }
+                    if dev_only { None } else { Some(&dep.pkg) }
                 });
 
                 Some((&n.id, non_dev_pkgs.collect()))

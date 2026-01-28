@@ -4,7 +4,7 @@ use std::path::Path;
 use crate::config::Replace;
 use crate::error::CargoResult;
 
-pub static NOW: once_cell::sync::Lazy<String> = once_cell::sync::Lazy::new(|| {
+pub static NOW: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     time::OffsetDateTime::now_utc()
         .format(time::macros::format_description!("[year]-[month]-[day]"))
         .unwrap()
@@ -23,25 +23,27 @@ pub struct Template<'a> {
     pub tag_name: Option<&'a str>,
 }
 
-impl<'a> Template<'a> {
+impl Template<'_> {
     pub fn render(&self, input: &str) -> String {
-        let mut s = input.to_string();
         const PREV_VERSION: &str = "{{prev_version}}";
-        s = render_var(s, PREV_VERSION, self.prev_version);
         const PREV_METADATA: &str = "{{prev_metadata}}";
-        s = render_var(s, PREV_METADATA, self.prev_metadata);
         const VERSION: &str = "{{version}}";
-        s = render_var(s, VERSION, self.version);
         const METADATA: &str = "{{metadata}}";
-        s = render_var(s, METADATA, self.metadata);
         const CRATE_NAME: &str = "{{crate_name}}";
-        s = render_var(s, CRATE_NAME, self.crate_name);
         const DATE: &str = "{{date}}";
-        s = render_var(s, DATE, self.date);
 
         const PREFIX: &str = "{{prefix}}";
-        s = render_var(s, PREFIX, self.prefix);
         const TAG_NAME: &str = "{{tag_name}}";
+
+        let mut s = input.to_owned();
+        s = render_var(s, PREV_VERSION, self.prev_version);
+        s = render_var(s, PREV_METADATA, self.prev_metadata);
+        s = render_var(s, VERSION, self.version);
+        s = render_var(s, METADATA, self.metadata);
+        s = render_var(s, CRATE_NAME, self.crate_name);
+        s = render_var(s, DATE, self.date);
+
+        s = render_var(s, PREFIX, self.prefix);
         s = render_var(s, TAG_NAME, self.tag_name);
         s
     }
@@ -51,7 +53,7 @@ fn render_var(mut template: String, var_name: &str, var_value: Option<&str>) -> 
     if let Some(var_value) = var_value {
         template = template.replace(var_name, var_value);
     } else if template.contains(var_name) {
-        log::debug!("Unrendered {} present in template {:?}", var_name, template);
+        log::warn!("Unrendered {var_name} present in template {template:?}");
     }
     template
 }
@@ -71,7 +73,7 @@ pub fn do_file_replacements(
         by_file.entry(file).or_insert_with(Vec::new).push(replace);
     }
 
-    for (path, replaces) in by_file.into_iter() {
+    for (path, replaces) in by_file {
         let file = cwd.join(&path);
         log::debug!("processing replacements for file {}", file.display());
         if !file.exists() {
@@ -90,7 +92,7 @@ pub fn do_file_replacements(
             let r = regex::RegexBuilder::new(pattern).multi_line(true).build()?;
 
             let min = replace.min.or(replace.exactly).unwrap_or(1);
-            let max = replace.max.or(replace.exactly).unwrap_or(std::usize::MAX);
+            let max = replace.max.or(replace.exactly).unwrap_or(usize::MAX);
             let actual = r.find_iter(&replaced).count();
             if actual < min {
                 anyhow::bail!(
@@ -118,25 +120,13 @@ pub fn do_file_replacements(
 
         if data != replaced {
             if dry_run {
-                let display_path = path.display().to_string();
-                let data_lines: Vec<_> = data.lines().map(|s| format!("{}\n", s)).collect();
-                let replaced_lines: Vec<_> = replaced.lines().map(|s| format!("{}\n", s)).collect();
-                let diff = difflib::unified_diff(
-                    &data_lines,
-                    &replaced_lines,
-                    display_path.as_str(),
-                    display_path.as_str(),
-                    "original",
-                    "replaced",
-                    0,
-                );
                 if noisy {
                     let _ = crate::ops::shell::status(
                         "Replacing",
                         format!(
                             "in {}\n{}",
                             path.display(),
-                            itertools::join(diff.into_iter(), "")
+                            crate::ops::diff::unified_diff(&data, &replaced, &path, "replaced")
                         ),
                     );
                 } else {

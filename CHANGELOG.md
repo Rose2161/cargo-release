@@ -1,7 +1,140 @@
 # Change Log
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/)
+and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- next-header -->
 ## [Unreleased] - ReleaseDate
+
+## [0.25.22] - 2025-11-13
+
+### Fixes
+
+- Don't require nightly for the stabilized Cargo-native workspace publishing
+
+## [0.25.21] - 2025-11-13
+
+### Compatibility
+
+- Build and runtime MSRV is now 1.90
+
+### Features
+
+- Stabilize Cargo-native workspace publishing
+
+## [0.25.20] - 2025-10-06
+
+### Fixes
+
+- Include registry name in "already published" error
+
+## [0.25.19] - 2025-09-26
+
+### Fixes
+
+- Ensure `--unpublished` can select packages without any other packages selected
+
+## [0.25.18] - 2025-04-09
+
+### Internal
+
+- Dependency updates
+
+## [0.25.17] - 2025-02-05
+
+### Fixes
+
+- Upgrade "unrendered variable" debug message to warning
+
+## [0.25.16] - 2025-01-31
+
+### Fixes
+
+- Use workspace default commit message (rather than package) when workspace inheritance forces consolidated-commits on
+
+## [0.25.15] - 2024-12-31
+
+### Fixes
+
+- *(unstable)* Don't try to workspace-publish packages that have `publish = false`
+
+## [0.25.14] - 2024-12-12
+
+### Features
+
+- Support for cargo's nightly workspace publishing (requires `cargo +nightly release -Zworkspace-publish ...`)
+
+## [0.25.13] - 2024-11-15
+
+### Compatibility
+
+- Build MSRV is now 1.80
+
+### Fixes
+
+- Improve `allow-branch` error
+
+## [0.25.12] - 2024-10-07
+
+### Compatibility
+
+- Build MSRV is now 1.79
+
+### Fixes
+
+- Report current dir for hook error messages
+
+## [0.25.11] - 2024-09-06
+
+### Compatibility
+
+- Build MSRV is now 1.78
+- Runtime MSRV is now 1.66
+
+### Fixes
+
+- Removed our own wait-for-publish logic, relying on Cargo instead
+
+## [0.25.10] - 2024-06-21
+
+### Features
+
+- Add `--certs-source` for overriding where certs are read from
+
+## [0.25.9] - 2024-06-21
+
+### Features
+
+- Add `rate-limit.new-packages`, `rate-limit.existing-packages`  workspace config to override the defaults
+
+## [0.25.8] - 2024-05-29
+
+### Internal
+
+- Update dependencies
+
+## [0.25.7] - 2024-04-25
+
+### Compatibility
+
+- MSRV is now 1.76
+
+### Fixes
+
+- Improve error message on hook failure due to permissions
+
+## [0.25.6] - 2024-02-27
+
+### Fixes
+
+- Improve diff output
+
+## [0.25.5] - 2024-02-08
+
+### Fixes
+
+- Ensure needed dependency features are enabled
 
 ## [0.25.4] - 2024-01-17
 
@@ -674,7 +807,25 @@ git.
 * Doc update
 
 <!-- next-url -->
-[Unreleased]: https://github.com/crate-ci/cargo-release/compare/v0.25.4...HEAD
+[Unreleased]: https://github.com/crate-ci/cargo-release/compare/v0.25.22...HEAD
+[0.25.22]: https://github.com/crate-ci/cargo-release/compare/v0.25.21...v0.25.22
+[0.25.21]: https://github.com/crate-ci/cargo-release/compare/v0.25.20...v0.25.21
+[0.25.20]: https://github.com/crate-ci/cargo-release/compare/v0.25.19...v0.25.20
+[0.25.19]: https://github.com/crate-ci/cargo-release/compare/v0.25.18...v0.25.19
+[0.25.18]: https://github.com/crate-ci/cargo-release/compare/v0.25.17...v0.25.18
+[0.25.17]: https://github.com/crate-ci/cargo-release/compare/v0.25.16...v0.25.17
+[0.25.16]: https://github.com/crate-ci/cargo-release/compare/v0.25.15...v0.25.16
+[0.25.15]: https://github.com/crate-ci/cargo-release/compare/v0.25.14...v0.25.15
+[0.25.14]: https://github.com/crate-ci/cargo-release/compare/v0.25.13...v0.25.14
+[0.25.13]: https://github.com/crate-ci/cargo-release/compare/v0.25.12...v0.25.13
+[0.25.12]: https://github.com/crate-ci/cargo-release/compare/v0.25.11...v0.25.12
+[0.25.11]: https://github.com/crate-ci/cargo-release/compare/v0.25.10...v0.25.11
+[0.25.10]: https://github.com/crate-ci/cargo-release/compare/v0.25.9...v0.25.10
+[0.25.9]: https://github.com/crate-ci/cargo-release/compare/v0.25.8...v0.25.9
+[0.25.8]: https://github.com/crate-ci/cargo-release/compare/v0.25.7...v0.25.8
+[0.25.7]: https://github.com/crate-ci/cargo-release/compare/v0.25.6...v0.25.7
+[0.25.6]: https://github.com/crate-ci/cargo-release/compare/v0.25.5...v0.25.6
+[0.25.5]: https://github.com/crate-ci/cargo-release/compare/v0.25.4...v0.25.5
 [0.25.4]: https://github.com/crate-ci/cargo-release/compare/v0.25.3...v0.25.4
 [0.25.3]: https://github.com/crate-ci/cargo-release/compare/v0.25.2...v0.25.3
 [0.25.2]: https://github.com/crate-ci/cargo-release/compare/v0.25.1...v0.25.2

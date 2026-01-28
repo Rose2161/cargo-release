@@ -1,3 +1,5 @@
+use itertools::Itertools;
+
 use crate::error::CliError;
 use crate::ops::git;
 use crate::steps::plan;
@@ -20,6 +22,10 @@ pub struct PublishStep {
     /// Ignore implicit configuration files.
     #[arg(long)]
     isolated: bool,
+
+    /// Unstable options
+    #[arg(short = 'Z', value_name = "FEATURE")]
+    z: Vec<crate::config::UnstableValues>,
 
     /// Comma-separated globs of branch names a release can happen from
     #[arg(long, value_delimiter = ',')]
@@ -61,9 +67,7 @@ impl PublishStep {
 
         let (_selected_pkgs, excluded_pkgs) = self.workspace.partition_packages(&ws_meta);
         for excluded_pkg in excluded_pkgs {
-            let pkg = if let Some(pkg) = pkgs.get_mut(&excluded_pkg.id) {
-                pkg
-            } else {
+            let Some(pkg) = pkgs.get_mut(&excluded_pkg.id) else {
                 // Either not in workspace or marked as `release = false`.
                 continue;
             };
@@ -75,7 +79,7 @@ impl PublishStep {
             pkg.config.release = Some(false);
 
             let crate_name = pkg.meta.name.as_str();
-            log::debug!("disabled by user, skipping {}", crate_name,);
+            log::debug!("disabled by user, skipping {crate_name}",);
         }
 
         let mut pkgs = plan::plan(pkgs)?;
@@ -90,6 +94,7 @@ impl PublishStep {
                     pkg.config.registry(),
                     crate_name,
                     &version.full_version_string,
+                    pkg.config.certs_source(),
                 ) {
                     let _ = crate::ops::shell::warn(format!(
                         "disabled due to previous publish ({}), skipping {}",
@@ -135,14 +140,19 @@ impl PublishStep {
         )?;
 
         failed |= !super::verify_metadata(&selected_pkgs, dry_run, log::Level::Error)?;
-        failed |=
-            !super::verify_rate_limit(&selected_pkgs, &mut index, dry_run, log::Level::Error)?;
+        failed |= !super::verify_rate_limit(
+            &selected_pkgs,
+            &mut index,
+            &ws_config.rate_limit,
+            dry_run,
+            log::Level::Error,
+        )?;
 
         // STEP 1: Release Confirmation
         super::confirm("Publish", &selected_pkgs, self.no_confirm, dry_run)?;
 
         // STEP 3: cargo publish
-        publish(&ws_meta, &selected_pkgs, &mut index, dry_run)?;
+        publish(&selected_pkgs, dry_run)?;
 
         super::finish(failed, dry_run)
     }
@@ -151,6 +161,7 @@ impl PublishStep {
         crate::config::ConfigArgs {
             custom_config: self.custom_config.clone(),
             isolated: self.isolated,
+            z: self.z.clone(),
             allow_branch: self.allow_branch.clone(),
             publish: self.publish.clone(),
             ..Default::default()
@@ -158,10 +169,67 @@ impl PublishStep {
     }
 }
 
-pub fn publish(
-    ws_meta: &cargo_metadata::Metadata,
+pub fn publish(pkgs: &[plan::PackageRelease], dry_run: bool) -> Result<(), CliError> {
+    if pkgs.is_empty() {
+        Ok(())
+    } else {
+        let first_pkg = pkgs.first().unwrap();
+        let registry = first_pkg.config.registry();
+        let target = first_pkg.config.target.as_deref();
+        let publish_grace_sleep = publish_grace_sleep();
+        if publish_grace_sleep.is_none()
+            && pkgs
+                .iter()
+                .all(|p| p.config.registry() == registry && p.config.target.as_deref() == target)
+        {
+            let manifest_path = &first_pkg.manifest_path;
+            workspace_publish(manifest_path, pkgs, registry, target, dry_run)
+        } else {
+            serial_publish(pkgs, publish_grace_sleep, dry_run)
+        }
+    }
+}
+
+fn workspace_publish(
+    manifest_path: &std::path::Path,
     pkgs: &[plan::PackageRelease],
-    index: &mut crate::ops::index::CratesIoIndex,
+    registry: Option<&str>,
+    target: Option<&str>,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let crate_names = pkgs.iter().map(|p| p.meta.name.as_str()).join(", ");
+    let _ = crate::ops::shell::status("Publishing", crate_names);
+
+    let verify = pkgs.iter().all(|p| p.config.verify());
+    let features = pkgs.iter().map(|p| &p.features).collect::<Vec<_>>();
+    // HACK: Ignoring the more precise `pkg.meta.id`.  While it has been stabilized,
+    // the version won't match after we do a version bump and it seems too messy to bother
+    // trying to specify it.
+    // atm at least Cargo doesn't seem to mind if `crate_name` is also a transitive dep, unlike
+    // other cargo commands
+    let pkgids = pkgs
+        .iter()
+        .filter(|p| p.config.publish())
+        .map(|p| p.meta.name.as_str())
+        .collect::<Vec<_>>();
+    if !crate::ops::cargo::publish(
+        dry_run,
+        verify,
+        manifest_path,
+        &pkgids,
+        &features,
+        registry,
+        target,
+    )? {
+        return Err(101.into());
+    }
+
+    Ok(())
+}
+
+fn serial_publish(
+    pkgs: &[plan::PackageRelease],
+    publish_grace_sleep: Option<u64>,
     dry_run: bool,
 ) -> Result<(), CliError> {
     for pkg in pkgs {
@@ -181,14 +249,13 @@ pub fn publish(
             true
         };
         // feature list to release
-        let features = &pkg.features;
-        let pkgid = if 1 < ws_meta.workspace_members.len() {
-            // Override `workspace.default-members`
-            Some(crate_name)
-        } else {
-            // `-p` is not recommended outside of a workspace
-            None
-        };
+        let features = &[&pkg.features];
+        // HACK: Ignoring the more precise `pkg.meta.id`.  While it has been stabilized,
+        // the version won't match after we do a version bump and it seems too messy to bother
+        // trying to specify it.
+        // atm at least Cargo doesn't seem to mind if `crate_name` is also a transitive dep, unlike
+        // other cargo commands
+        let pkgid = &[crate_name];
         if !crate::ops::cargo::publish(
             dry_run,
             verify,
@@ -201,33 +268,29 @@ pub fn publish(
             return Err(101.into());
         }
 
-        let timeout = std::time::Duration::from_secs(300);
-        let version = pkg.planned_version.as_ref().unwrap_or(&pkg.initial_version);
-        crate::ops::cargo::wait_for_publish(
-            index,
-            pkg.config.registry(),
-            crate_name,
-            &version.full_version_string,
-            timeout,
-            dry_run,
-        )?;
-        // HACK: Even once the index is updated, there seems to be another step before the publish is fully ready.
-        // We don't have a way yet to check for that, so waiting for now in hopes everything is ready
-        if !dry_run {
-            let publish_grace_sleep = std::env::var("PUBLISH_GRACE_SLEEP")
-                .unwrap_or_else(|_| Default::default())
-                .parse()
-                .unwrap_or(0);
-            if 0 < publish_grace_sleep {
-                log::debug!(
-                    "waiting an additional {} seconds for {} to update its indices...",
-                    publish_grace_sleep,
-                    pkg.config.registry().unwrap_or("crates.io")
-                );
-                std::thread::sleep(std::time::Duration::from_secs(publish_grace_sleep));
-            }
+        // HACK: This is a fallback in case users can't or don't want to rely on cargo waiting for
+        // them
+        if !dry_run && let Some(publish_grace_sleep) = publish_grace_sleep {
+            log::debug!(
+                "waiting an additional {} seconds for {} to update its indices...",
+                publish_grace_sleep,
+                pkg.config.registry().unwrap_or("crates.io")
+            );
+            std::thread::sleep(std::time::Duration::from_secs(publish_grace_sleep));
         }
     }
 
     Ok(())
+}
+
+fn publish_grace_sleep() -> Option<u64> {
+    let publish_grace_sleep = std::env::var("PUBLISH_GRACE_SLEEP")
+        .unwrap_or_else(|_| Default::default())
+        .parse()
+        .unwrap_or(0);
+    if publish_grace_sleep == 0 {
+        None
+    } else {
+        Some(publish_grace_sleep)
+    }
 }

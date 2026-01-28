@@ -4,7 +4,7 @@ use std::path::Path;
 use crate::error::CliError;
 use crate::ops::cmd;
 use crate::ops::git;
-use crate::ops::replace::{Template, NOW};
+use crate::ops::replace::{NOW, Template};
 use crate::steps::plan;
 
 /// Run pre-release hooks
@@ -27,6 +27,10 @@ pub struct HookStep {
     /// Ignore implicit configuration files.
     #[arg(long)]
     isolated: bool,
+
+    /// Unstable options
+    #[arg(short = 'Z', value_name = "FEATURE")]
+    z: Vec<crate::config::UnstableValues>,
 
     /// Comma-separated globs of branch names a release can happen from
     #[arg(long, value_delimiter = ',')]
@@ -64,11 +68,14 @@ impl HookStep {
         let ws_config = crate::config::load_workspace_config(&config, &ws_meta)?;
         let mut pkgs = plan::load(&config, &ws_meta)?;
 
-        let (_selected_pkgs, excluded_pkgs) = self.workspace.partition_packages(&ws_meta);
-        for excluded_pkg in excluded_pkgs {
-            let pkg = if let Some(pkg) = pkgs.get_mut(&excluded_pkg.id) {
-                pkg
+        let (_selected_pkgs, excluded_pkgs) =
+            if self.unpublished && self.workspace == clap_cargo::Workspace::default() {
+                ws_meta.packages.iter().partition(|_| false)
             } else {
+                self.workspace.partition_packages(&ws_meta)
+            };
+        for excluded_pkg in excluded_pkgs {
+            let Some(pkg) = pkgs.get_mut(&excluded_pkg.id) else {
                 // Either not in workspace or marked as `release = false`.
                 continue;
             };
@@ -91,6 +98,7 @@ impl HookStep {
                     pkg.config.registry(),
                     crate_name,
                     &version.full_version_string,
+                    pkg.config.certs_source(),
                 ) {
                     log::debug!(
                         "enabled {}, v{} is unpublished",
@@ -157,6 +165,7 @@ impl HookStep {
         crate::config::ConfigArgs {
             custom_config: self.custom_config.clone(),
             isolated: self.isolated,
+            z: self.z.clone(),
             allow_branch: self.allow_branch.clone(),
             ..Default::default()
         }
@@ -191,7 +200,7 @@ pub fn hook(
             .into_iter()
             .map(|arg| template.render(arg))
             .collect::<Vec<_>>();
-        log::debug!("calling pre-release hook: {:?}", pre_rel_hook);
+        log::debug!("calling pre-release hook: {pre_rel_hook:?}");
         let envs = maplit::btreemap! {
             OsStr::new("PREV_VERSION") => prev_version_var.as_ref(),
             OsStr::new("PREV_METADATA") => prev_metadata_var.as_ref(),
@@ -206,8 +215,7 @@ pub fn hook(
         // so here we set dry_run=false and always execute the command.
         if !cmd::call_with_env(pre_rel_hook, envs, cwd, false)? {
             let _ = crate::ops::shell::error(format!(
-                "release of {} aborted by non-zero return of prerelease hook.",
-                crate_name
+                "release of {crate_name} aborted by non-zero return of prerelease hook."
             ));
             return Err(101.into());
         }

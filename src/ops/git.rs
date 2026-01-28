@@ -23,22 +23,21 @@ pub fn is_behind_remote(dir: &Path, remote: &str, branch: &str) -> CargoResult<b
 
     let branch_id = repo.revparse_single(branch)?.id();
 
-    let remote_branch = format!("{}/{}", remote, branch);
+    let remote_branch = format!("{remote}/{branch}");
     let behind = match repo.revparse_single(&remote_branch) {
         Ok(o) => {
             let remote_branch_id = o.id();
 
             let base_id = repo.merge_base(remote_branch_id, branch_id)?;
 
-            log::trace!("{}: {}", remote_branch, remote_branch_id);
-            log::trace!("merge base: {}", base_id);
+            log::trace!("{remote_branch}: {remote_branch_id}");
+            log::trace!("merge base: {base_id}");
 
             base_id != remote_branch_id
         }
         Err(err) => {
-            let _ =
-                crate::ops::shell::warn(format!("push target `{}` doesn't exist", remote_branch));
-            log::trace!("error {}", err);
+            let _ = crate::ops::shell::warn(format!("push target `{remote_branch}` doesn't exist"));
+            log::trace!("error {err}");
             false
         }
     };
@@ -51,22 +50,21 @@ pub fn is_local_unchanged(dir: &Path, remote: &str, branch: &str) -> CargoResult
 
     let branch_id = repo.revparse_single(branch)?.id();
 
-    let remote_branch = format!("{}/{}", remote, branch);
+    let remote_branch = format!("{remote}/{branch}");
     let unchanged = match repo.revparse_single(&remote_branch) {
         Ok(o) => {
             let remote_branch_id = o.id();
 
             let base_id = repo.merge_base(remote_branch_id, branch_id)?;
 
-            log::trace!("{}: {}", remote_branch, remote_branch_id);
-            log::trace!("merge base: {}", base_id);
+            log::trace!("{remote_branch}: {remote_branch_id}");
+            log::trace!("merge base: {base_id}");
 
             base_id == branch_id
         }
         Err(err) => {
-            let _ =
-                crate::ops::shell::warn(format!("push target `{}` doesn't exist", remote_branch));
-            log::trace!("error {}", err);
+            let _ = crate::ops::shell::warn(format!("push target `{remote_branch}` doesn't exist"));
+            log::trace!("error {err}");
             false
         }
     };
@@ -90,7 +88,7 @@ pub fn is_dirty(dir: &Path) -> CargoResult<Option<Vec<String>>> {
     let state = repo.state();
     let dirty_state = state != git2::RepositoryState::Clean;
     if dirty_state {
-        entries.push(format!("Dirty because of state {:?}", state));
+        entries.push(format!("Dirty because of state {state:?}"));
     }
 
     let mut options = git2::StatusOptions::new();
@@ -118,7 +116,7 @@ pub fn changed_files(dir: &Path, tag: &str) -> CargoResult<Option<Vec<PathBuf>>>
 
     let output = Command::new("git")
         .arg("diff")
-        .arg(&format!("{}..HEAD", tag))
+        .arg(format!("{tag}..HEAD"))
         .arg("--name-only")
         .arg("--exit-code")
         .arg("--")
@@ -257,9 +255,9 @@ pub fn git_version() -> CargoResult<()> {
 
 // From git2 crate
 #[cfg(unix)]
-pub fn bytes2path(b: &[u8]) -> &std::path::Path {
-    use std::os::unix::prelude::*;
-    std::path::Path::new(std::ffi::OsStr::from_bytes(b))
+pub fn bytes2path(b: &[u8]) -> &Path {
+    use std::os::unix::prelude::OsStrExt;
+    Path::new(std::ffi::OsStr::from_bytes(b))
 }
 
 // From git2 crate

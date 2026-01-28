@@ -12,6 +12,7 @@ use crate::ops::cargo;
 pub struct Config {
     #[serde(skip)]
     pub is_workspace: bool,
+    pub unstable: Unstable,
     pub allow_branch: Option<Vec<String>>,
     pub sign_commit: Option<bool>,
     pub sign_tag: Option<bool>,
@@ -37,6 +38,8 @@ pub struct Config {
     pub dependent_version: Option<DependentVersion>,
     pub metadata: Option<MetadataPolicy>,
     pub target: Option<String>,
+    pub rate_limit: RateLimit,
+    pub certs_source: Option<CertsSource>,
 }
 
 impl Config {
@@ -48,6 +51,7 @@ impl Config {
         let empty = Config::new();
         Config {
             is_workspace: true,
+            unstable: Unstable::from_defaults(),
             allow_branch: Some(
                 empty
                     .allow_branch()
@@ -85,10 +89,13 @@ impl Config {
             dependent_version: Some(empty.dependent_version()),
             metadata: Some(empty.metadata()),
             target: None,
+            rate_limit: RateLimit::from_defaults(),
+            certs_source: Some(empty.certs_source()),
         }
     }
 
     pub fn update(&mut self, source: &Config) {
+        self.unstable.update(&source.unstable);
         if let Some(allow_branch) = source.allow_branch.as_deref() {
             self.allow_branch = Some(allow_branch.to_owned());
         }
@@ -164,6 +171,14 @@ impl Config {
         if let Some(target) = source.target.as_deref() {
             self.target = Some(target.to_owned());
         }
+        self.rate_limit.update(&source.rate_limit);
+        if let Some(certs) = source.certs_source {
+            self.certs_source = Some(certs);
+        }
+    }
+
+    pub fn unstable(&self) -> &Unstable {
+        &self.unstable
     }
 
     pub fn allow_branch(&self) -> impl Iterator<Item = &str> {
@@ -284,11 +299,7 @@ impl Config {
             cargo::Features::All
         } else {
             let features = self.enable_features();
-            if features.is_empty() {
-                cargo::Features::None
-            } else {
-                cargo::Features::Selective(features.to_owned())
-            }
+            cargo::Features::Selective(features.to_owned())
         }
     }
 
@@ -298,6 +309,51 @@ impl Config {
 
     pub fn metadata(&self) -> MetadataPolicy {
         self.metadata.unwrap_or_default()
+    }
+
+    pub fn certs_source(&self) -> CertsSource {
+        self.certs_source.unwrap_or_default()
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+#[serde(rename_all = "kebab-case")]
+pub struct Unstable {
+    workspace_publish: Option<bool>,
+}
+
+impl Unstable {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    pub fn from_defaults() -> Self {
+        let empty = Self::new();
+        Self {
+            workspace_publish: Some(empty.workspace_publish()),
+        }
+    }
+    pub fn update(&mut self, source: &Self) {
+        if let Some(workspace_publish) = source.workspace_publish {
+            self.workspace_publish = Some(workspace_publish);
+        }
+    }
+
+    fn workspace_publish(&self) -> bool {
+        self.workspace_publish.unwrap_or(false)
+    }
+}
+
+impl From<Vec<UnstableValues>> for Unstable {
+    fn from(values: Vec<UnstableValues>) -> Self {
+        let mut unstable = Unstable::new();
+        for value in values {
+            match value {
+                UnstableValues::WorkspacePublish(value) => unstable.workspace_publish = Some(value),
+            }
+        }
+        unstable
     }
 }
 
@@ -324,8 +380,8 @@ pub enum Command {
 impl Command {
     pub fn args(&self) -> Vec<&str> {
         match self {
-            Command::Line(ref s) => vec![s.as_str()],
-            Command::Args(ref a) => a.iter().map(|s| s.as_str()).collect(),
+            Command::Line(s) => vec![s.as_str()],
+            Command::Args(a) => a.iter().map(|s| s.as_str()).collect(),
         }
     }
 }
@@ -340,6 +396,18 @@ pub enum DependentVersion {
     Upgrade,
     /// Upgrade when the old version requirement no longer applies
     Fix,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+#[value(rename_all = "kebab-case")]
+#[derive(Default)]
+pub enum CertsSource {
+    /// Use certs from Mozilla's root certificate store.
+    #[default]
+    Webpki,
+    /// Use certs from the system root certificate store.
+    Native,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
@@ -452,6 +520,45 @@ struct CargoMetadata {
     release: Option<Config>,
 }
 
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct RateLimit {
+    #[serde(default)]
+    pub new_packages: Option<usize>,
+    #[serde(default)]
+    pub existing_packages: Option<usize>,
+}
+
+impl RateLimit {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    pub fn from_defaults() -> Self {
+        Self {
+            new_packages: Some(5),
+            existing_packages: Some(30),
+        }
+    }
+
+    pub fn update(&mut self, source: &RateLimit) {
+        if source.new_packages.is_some() {
+            self.new_packages = source.new_packages;
+        }
+        if source.existing_packages.is_some() {
+            self.existing_packages = source.existing_packages;
+        }
+    }
+
+    pub fn new_packages(&self) -> usize {
+        self.new_packages.unwrap_or(5)
+    }
+
+    pub fn existing_packages(&self) -> usize {
+        self.existing_packages.unwrap_or(30)
+    }
+}
+
 pub fn load_workspace_config(
     args: &ConfigArgs,
     ws_meta: &cargo_metadata::Metadata,
@@ -471,7 +578,7 @@ pub fn load_workspace_config(
             let pkg = ws_meta
                 .packages
                 .iter()
-                .find(|p| ws_meta.workspace_members.iter().any(|m| *m == p.id))
+                .find(|p| ws_meta.workspace_members.contains(&p.id))
                 .unwrap();
             resolve_config(
                 ws_meta.workspace_root.as_std_path(),
@@ -527,11 +634,15 @@ pub fn load_package_config(
 pub struct ConfigArgs {
     /// Custom config file
     #[arg(short, long = "config", value_name = "PATH")]
-    pub custom_config: Option<std::path::PathBuf>,
+    pub custom_config: Option<PathBuf>,
 
     /// Ignore implicit configuration files.
     #[arg(long)]
     pub isolated: bool,
+
+    /// Unstable options
+    #[arg(short = 'Z', value_name = "FEATURE")]
+    pub z: Vec<UnstableValues>,
 
     /// Sign both git commit and tag
     #[arg(long, overrides_with("no_sign"))]
@@ -541,11 +652,15 @@ pub struct ConfigArgs {
 
     /// Specify how workspace dependencies on this crate should be handed.
     #[arg(long, value_name = "ACTION", value_enum)]
-    pub dependent_version: Option<crate::config::DependentVersion>,
+    pub dependent_version: Option<DependentVersion>,
 
     /// Comma-separated globs of branch names a release can happen from
     #[arg(long, value_delimiter = ',', value_name = "GLOB[,...]")]
     pub allow_branch: Option<Vec<String>>,
+
+    /// Indicate what certificate store to use for web requests.
+    #[arg(long)]
+    pub certs_source: Option<CertsSource>,
 
     #[command(flatten)]
     pub commit: CommitArgs,
@@ -561,12 +676,14 @@ pub struct ConfigArgs {
 }
 
 impl ConfigArgs {
-    pub fn to_config(&self) -> crate::config::Config {
-        let mut config = crate::config::Config {
+    pub fn to_config(&self) -> Config {
+        let mut config = Config {
+            unstable: Unstable::from(self.z.clone()),
             allow_branch: self.allow_branch.clone(),
             sign_commit: self.sign(),
             sign_tag: self.sign(),
             dependent_version: self.dependent_version,
+            certs_source: self.certs_source,
             ..Default::default()
         };
         config.update(&self.commit.to_config());
@@ -581,6 +698,46 @@ impl ConfigArgs {
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum UnstableValues {
+    WorkspacePublish(bool),
+}
+
+impl std::str::FromStr for UnstableValues {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (name, mut value) = value.split_once('=').unwrap_or((value, ""));
+        match name {
+            "workspace-publish" => {
+                if value.is_empty() {
+                    value = "true";
+                }
+                let value = match value {
+                    "true" => true,
+                    "false" => false,
+                    _ => anyhow::bail!(
+                        "unsupported value `{name}={value}`, expected one of `true`, `false`"
+                    ),
+                };
+                Ok(UnstableValues::WorkspacePublish(value))
+            }
+            _ => {
+                anyhow::bail!("unsupported unstable feature name `{name}` (value `{value}`)");
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for UnstableValues {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        match self {
+            Self::WorkspacePublish(true) => "workspace-publish".fmt(fmt),
+            Self::WorkspacePublish(false) => "".fmt(fmt),
+        }
+    }
+}
+
 #[derive(Clone, Default, Debug, clap::Args)]
 #[command(next_help_heading = "Commit")]
 pub struct CommitArgs {
@@ -592,8 +749,8 @@ pub struct CommitArgs {
 }
 
 impl CommitArgs {
-    pub fn to_config(&self) -> crate::config::Config {
-        crate::config::Config {
+    pub fn to_config(&self) -> Config {
+        Config {
             sign_commit: resolve_bool_arg(self.sign_commit, self.no_sign_commit),
             ..Default::default()
         }
@@ -633,8 +790,8 @@ pub struct PublishArgs {
 }
 
 impl PublishArgs {
-    pub fn to_config(&self) -> crate::config::Config {
-        crate::config::Config {
+    pub fn to_config(&self) -> Config {
+        Config {
             publish: resolve_bool_arg(self.publish, self.no_publish),
             registry: self.registry.clone(),
             verify: resolve_bool_arg(self.verify, self.no_verify),
@@ -671,8 +828,8 @@ pub struct TagArgs {
 }
 
 impl TagArgs {
-    pub fn to_config(&self) -> crate::config::Config {
-        crate::config::Config {
+    pub fn to_config(&self) -> Config {
+        Config {
             tag: resolve_bool_arg(self.tag, self.no_tag),
             sign_tag: resolve_bool_arg(self.sign_tag, self.no_sign_tag),
             tag_prefix: self.tag_prefix.clone(),
@@ -697,8 +854,8 @@ pub struct PushArgs {
 }
 
 impl PushArgs {
-    pub fn to_config(&self) -> crate::config::Config {
-        crate::config::Config {
+    pub fn to_config(&self) -> Config {
+        Config {
             push: resolve_bool_arg(self.push, self.no_push),
             push_remote: self.push_remote.clone(),
             ..Default::default()
@@ -820,9 +977,6 @@ pub fn resolve_config(workspace_root: &Path, manifest_path: &Path) -> CargoResul
 }
 
 pub fn resolve_overrides(workspace_root: &Path, manifest_path: &Path) -> CargoResult<Config> {
-    let mut release_config = Config::default();
-
-    let mut workspace_cache = None;
     fn load_workspace<'m, 'c: 'm>(
         workspace_root: &Path,
         workspace_cache: &'c mut Option<CargoManifest>,
@@ -838,6 +992,9 @@ pub fn resolve_overrides(workspace_root: &Path, manifest_path: &Path) -> CargoRe
         Ok(workspace_cache.as_ref().unwrap())
     }
 
+    let mut release_config = Config::default();
+
+    let mut workspace_cache = None;
     // the publish flag in cargo file
     let manifest = std::fs::read_to_string(manifest_path)?;
     let manifest: CargoManifest = toml::from_str(&manifest)

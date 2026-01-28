@@ -50,17 +50,17 @@ pub fn verify_tags_missing(
     let mut tag_exists = false;
     let mut seen_tags = std::collections::HashSet::new();
     for pkg in pkgs {
-        if let Some(tag_name) = pkg.planned_tag.as_ref() {
-            if seen_tags.insert(tag_name) {
-                let cwd = &pkg.package_root;
-                if crate::ops::git::tag_exists(cwd, tag_name)? {
-                    let crate_name = pkg.meta.name.as_str();
-                    let _ = crate::ops::shell::log(
-                        level,
-                        format!("tag `{}` already exists (for `{}`)", tag_name, crate_name),
-                    );
-                    tag_exists = true;
-                }
+        if let Some(tag_name) = pkg.planned_tag.as_ref()
+            && seen_tags.insert(tag_name)
+        {
+            let cwd = &pkg.package_root;
+            if crate::ops::git::tag_exists(cwd, tag_name)? {
+                let crate_name = pkg.meta.name.as_str();
+                let _ = crate::ops::shell::log(
+                    level,
+                    format!("tag `{tag_name}` already exists (for `{crate_name}`)"),
+                );
+                tag_exists = true;
             }
         }
     }
@@ -84,17 +84,17 @@ pub fn verify_tags_exist(
     let mut tag_missing = false;
     let mut seen_tags = std::collections::HashSet::new();
     for pkg in pkgs {
-        if let Some(tag_name) = pkg.planned_tag.as_ref() {
-            if seen_tags.insert(tag_name) {
-                let cwd = &pkg.package_root;
-                if !crate::ops::git::tag_exists(cwd, tag_name)? {
-                    let crate_name = pkg.meta.name.as_str();
-                    let _ = crate::ops::shell::log(
-                        level,
-                        format!("tag `{}` doesn't exist (for `{}`)", tag_name, crate_name),
-                    );
-                    tag_missing = true;
-                }
+        if let Some(tag_name) = pkg.planned_tag.as_ref()
+            && seen_tags.insert(tag_name)
+        {
+            let cwd = &pkg.package_root;
+            if !crate::ops::git::tag_exists(cwd, tag_name)? {
+                let crate_name = pkg.meta.name.as_str();
+                let _ = crate::ops::shell::log(
+                    level,
+                    format!("tag `{tag_name}` doesn't exist (for `{crate_name}`)"),
+                );
+                tag_missing = true;
             }
         }
     }
@@ -126,15 +126,17 @@ pub fn verify_git_branch(
     let good_branches = good_branches.build()?;
     let good_branch_match = good_branches.matched_path_or_any_parents(&branch, false);
     if !good_branch_match.is_ignore() {
+        let allowed = ws_config
+            .allow_branch()
+            .map(|b| format!("`{b}`"))
+            .join(", ");
         let _ = crate::ops::shell::log(
             level,
             format!(
-                "cannot release from branch {:?}, instead switch to {:?}",
-                branch,
-                ws_config.allow_branch().join(", ")
+                "cannot release from branch `{branch}` as it doesn't match {allowed}; either switch to an allowed branch or add this branch to `allow-branch`",
             ),
         );
-        log::trace!("due to {:?}", good_branch_match);
+        log::trace!("due to {good_branch_match:?}");
         if level == log::Level::Error {
             success = false;
             if !dry_run {
@@ -163,10 +165,7 @@ pub fn verify_if_behind(
     let branch = crate::ops::git::current_branch(path)?;
     crate::ops::git::fetch(path, git_remote, &branch)?;
     if crate::ops::git::is_behind_remote(path, git_remote, &branch)? {
-        let _ = crate::ops::shell::log(
-            level,
-            format!("{} is behind {}/{}", branch, git_remote, branch),
-        );
+        let _ = crate::ops::shell::log(level, format!("{branch} is behind {git_remote}/{branch}"));
         if level == log::Level::Error {
             success = false;
             if !dry_run {
@@ -187,18 +186,18 @@ pub fn verify_monotonically_increasing(
 
     let mut downgrades_present = false;
     for pkg in pkgs {
-        if let Some(version) = pkg.planned_version.as_ref() {
-            if version.full_version < pkg.initial_version.full_version {
-                let crate_name = pkg.meta.name.as_str();
-                let _ = crate::ops::shell::log(
-                    level,
-                    format!(
-                        "cannot downgrade {} from {} to {}",
-                        crate_name, version.full_version, pkg.initial_version.full_version
-                    ),
-                );
-                downgrades_present = true;
-            }
+        if let Some(version) = pkg.planned_version.as_ref()
+            && version.full_version < pkg.initial_version.full_version
+        {
+            let crate_name = pkg.meta.name.as_str();
+            let _ = crate::ops::shell::log(
+                level,
+                format!(
+                    "cannot downgrade {} from {} to {}",
+                    crate_name, version.full_version, pkg.initial_version.full_version
+                ),
+            );
+            downgrades_present = true;
         }
     }
     if downgrades_present && level == log::Level::Error {
@@ -214,6 +213,7 @@ pub fn verify_monotonically_increasing(
 pub fn verify_rate_limit(
     pkgs: &[plan::PackageRelease],
     index: &mut crate::ops::index::CratesIoIndex,
+    rate_limit: &crate::config::RateLimit,
     dry_run: bool,
     level: log::Level,
 ) -> Result<bool, crate::error::CliError> {
@@ -228,7 +228,7 @@ pub fn verify_rate_limit(
         // Note: these rate limits are only known for default registry
         if pkg.config.registry().is_none() && pkg.config.publish() {
             let crate_name = pkg.meta.name.as_str();
-            if index.has_krate(None, crate_name)? {
+            if index.has_krate(None, crate_name, pkg.config.certs_source())? {
                 existing += 1;
             } else {
                 new += 1;
@@ -236,26 +236,28 @@ pub fn verify_rate_limit(
         }
     }
 
-    if 5 < new {
+    if rate_limit.new_packages() < new {
         // "The rate limit for creating new crates is 1 crate every 10 minutes, with a burst of 5 crates."
         success = false;
         let _ = crate::ops::shell::log(
             level,
             format!(
-                "attempting to publish {} new crates which is above the crates.io rate limit",
-                new
+                "attempting to publish {} new crates which is above the rate limit: {}",
+                new,
+                rate_limit.new_packages()
             ),
         );
     }
 
-    if 30 < existing {
+    if rate_limit.existing_packages() < existing {
         // "The rate limit for new versions of existing crates is 1 per minute, with a burst of 30 crates, so when releasing new versions of these crates, you shouldn't hit the limit."
         success = false;
         let _ = crate::ops::shell::log(
             level,
             format!(
-                "attempting to publish {} existing crates which is above the crates.io rate limit",
-                existing
+                "attempting to publish {} existing crates which is above the rate limit: {}",
+                existing,
+                rate_limit.existing_packages()
             ),
         );
     }
@@ -341,15 +343,10 @@ pub fn warn_changed(
         let version = pkg.planned_version.as_ref().unwrap_or(&pkg.initial_version);
         let crate_name = pkg.meta.name.as_str();
         if let Some(prior_tag_name) = &pkg.prior_tag {
-            if let Some(changed) =
-                crate::steps::version::changed_since(ws_meta, pkg, prior_tag_name)
-            {
+            if let Some(changed) = version::changed_since(ws_meta, pkg, prior_tag_name) {
                 if !changed.is_empty() {
                     log::debug!(
-                        "Files changed in {} since {}: {:#?}",
-                        crate_name,
-                        prior_tag_name,
-                        changed
+                        "Files changed in {crate_name} since {prior_tag_name}: {changed:#?}"
                     );
                     changed_pkgs.insert(&pkg.meta.id);
                     if changed.len() == 1 && changed[0].ends_with("Cargo.lock") {
@@ -358,11 +355,7 @@ pub fn warn_changed(
                         changed_pkgs.extend(pkg.dependents.iter().map(|d| &d.pkg.id));
                     }
                 } else if changed_pkgs.contains(&pkg.meta.id) {
-                    log::debug!(
-                        "Dependency changed for {} since {}",
-                        crate_name,
-                        prior_tag_name,
-                    );
+                    log::debug!("Dependency changed for {crate_name} since {prior_tag_name}",);
                     changed_pkgs.insert(&pkg.meta.id);
                     changed_pkgs.extend(pkg.dependents.iter().map(|d| &d.pkg.id));
                 } else {
@@ -373,16 +366,13 @@ pub fn warn_changed(
                 }
             } else {
                 log::debug!(
-                        "cannot detect changes for {} because tag {} is missing. Try setting `--prev-tag-name <TAG>`.",
-                        crate_name,
-                        prior_tag_name
-                    );
+                    "cannot detect changes for {crate_name} because tag {prior_tag_name} is missing. Try setting `--prev-tag-name <TAG>`."
+                );
             }
         } else {
             log::debug!(
-                    "cannot detect changes for {} because no tag was found. Try setting `--prev-tag-name <TAG>`.",
-                    crate_name,
-                );
+                "cannot detect changes for {crate_name} because no tag was found. Try setting `--prev-tag-name <TAG>`.",
+            );
         }
     }
 
@@ -463,7 +453,7 @@ pub fn confirm(
             use std::io::Write;
 
             let mut buffer: Vec<u8> = vec![];
-            writeln!(&mut buffer, "{}", step).unwrap();
+            writeln!(&mut buffer, "{step}").unwrap();
             for pkg in pkgs {
                 let crate_name = pkg.meta.name.as_str();
                 let version = pkg.planned_version.as_ref().unwrap_or(&pkg.initial_version);
@@ -557,16 +547,16 @@ impl std::fmt::Display for TargetVersion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         match self {
             TargetVersion::Relative(bump_level) => {
-                write!(f, "{}", bump_level)
+                write!(f, "{bump_level}")
             }
             TargetVersion::Absolute(version) => {
-                write!(f, "{}", version)
+                write!(f, "{version}")
             }
         }
     }
 }
 
-impl std::str::FromStr for TargetVersion {
+impl FromStr for TargetVersion {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -608,7 +598,6 @@ impl clap::builder::TypedValueParser for TargetVersionParser {
         &self,
     ) -> Option<Box<dyn Iterator<Item = clap::builder::PossibleValue> + '_>> {
         let inner_parser = clap::builder::EnumValueParser::<BumpLevel>::new();
-        #[allow(clippy::needless_collect)] // Erasing a lifetime
         inner_parser.possible_values().map(|ps| {
             let ps = ps.collect::<Vec<_>>();
             let ps: Box<dyn Iterator<Item = clap::builder::PossibleValue> + '_> =
@@ -648,7 +637,7 @@ impl std::fmt::Display for BumpLevel {
     }
 }
 
-impl std::str::FromStr for BumpLevel {
+impl FromStr for BumpLevel {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -659,7 +648,7 @@ impl std::str::FromStr for BumpLevel {
                 return Ok(*variant);
             }
         }
-        Err(format!("Invalid variant: {}", s))
+        Err(format!("Invalid variant: {s}"))
     }
 }
 

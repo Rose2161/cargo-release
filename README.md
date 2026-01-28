@@ -1,6 +1,12 @@
 # cargo release
 
-Features
+> Streamline your crate release process
+
+`cargo release` extends `cargo publish` with common release practices like
+validation, version management, tagging, and pushing.
+The process is customizable but with defaults that should help you get up and running quickly.
+
+Features include:
 - Ensure you are in a good state for release, including:
   - Right branch
   - Up-to-date with remote
@@ -18,7 +24,7 @@ Features
 
 ## Install
 
-Current release: 0.25.4
+Current release: 0.25.22
 
 ```console,ignore
 $ cargo install cargo-release
@@ -28,6 +34,8 @@ $ cargo install cargo-release
 
 ```console,ignore
 $ cargo release [level]
+<dry-run output>
+$ cargo release [level] --execute
 ```
 
 * See the [reference](docs/reference.md) for more on `level`, other CLI
@@ -48,6 +56,10 @@ verify what it will do.
 
 Once you are ready, pass the `--execute` flag.
 
+*Note:* the packaging and verifying steps will list the current version and not
+the bumped version because `cargo release` delegates to `cargo publish` which
+does not know about the in-memory-only version bump ([#890](https://github.com/crate-ci/cargo-release/issues/890)).
+
 ## Related tools
 
 - [release-pr Action](https://github.com/cargo-bins/release-pr)
@@ -67,14 +79,14 @@ with a `=` version requirement operator.
 
 Licensed under either of
 
-* Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
-* MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+* Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or <https://www.apache.org/licenses/LICENSE-2.0>)
+* MIT license ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/license/mit>)
 
 at your option.
 
 ### Contribution
 
 Unless you explicitly state otherwise, any contribution intentionally
-submitted for inclusion in the work by you, as defined in the
-Apache-2.0 license, shall be dual licensed as above, without any
-additional terms or conditions.
+submitted for inclusion in the work by you, as defined in the Apache-2.0
+license, shall be dual-licensed as above, without any additional terms or
+conditions.
